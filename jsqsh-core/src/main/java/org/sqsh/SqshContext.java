@@ -32,7 +32,11 @@ import java.util.List;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 
-import org.sqsh.input.ConsoleLineReader;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
+import org.sqsh.input.JLineTabCompleter;
 import org.sqsh.jni.ShellManager;
 
 /**
@@ -97,10 +101,10 @@ public class SqshContext {
         = "org/sqsh/variables/GlobalVariables.xml";
     
     /**
-     * This is where we read our input from.
+     * The line reader to use during interactive sessions
      */
-    ConsoleLineReader console = null;
-    
+    private LineReader console = null;
+
     /**
      * This objects instantiates all commands and manages all of the
      * command aliases.
@@ -179,7 +183,7 @@ public class SqshContext {
     /**
      * Responsible for visually displaying a query timer.
      */
-    private VisualTimer visualTimer = new VisualTimer(true);
+    private VisualTimer visualTimer = null;
     
     /**
      * This contains a list of commands upon which we will exit if they fail. The
@@ -263,18 +267,6 @@ public class SqshContext {
     
     /**
      * Creates a new SqshContext. 
-     * 
-     * @param readerType The type of readline implementation to utilize. This
-     *   may be one of
-     *   <ul>
-     *     <li> readline
-     *     <li> editline
-     *     <li> getline
-     *     <li> jline
-     *     <li> purejava
-     *     <li> null - This will attempt to determine which API is available
-     *        on your platform.
-     *    </ul>
      */
     public SqshContext() {
         
@@ -311,12 +303,7 @@ public class SqshContext {
             
             /* IGNORED */
         }
-        
-        /*
-         * The init script should always be run with no editline support
-         */
-        setReader(ConsoleLineReader.NONE);
-        
+
         /*
          * Run the internal initializations cript.
          */
@@ -357,7 +344,7 @@ public class SqshContext {
         driverManager.addListener(
             new SqshContextDriverListener(this));
     }
-    
+
     /**
      * @return The directory in which the jsqsh configuration can be found
      *   (this is $HOME/.jsqsh).
@@ -493,7 +480,20 @@ public class SqshContext {
         
         return this.extensionManager;
     }
-    
+
+    /**
+     * @return The visual timer handle
+     */
+    public VisualTimer getVisualTimer() {
+
+        if (visualTimer == null) {
+
+            return new VisualTimer(true, getConsole().getTerminal().writer());
+        }
+
+        return visualTimer;
+    }
+
     /**
      * Enables or disables the displaying of a visual timer that is shown
      * in interactive mode for long running queries. This feature is off
@@ -502,7 +502,7 @@ public class SqshContext {
      */
     public void setVisualTimerEnabled(boolean onoff) {
         
-        visualTimer.setEnabled(onoff);
+        getVisualTimer().setEnabled(onoff);
     }
     
     /**
@@ -510,7 +510,7 @@ public class SqshContext {
      */
     public boolean isVisualTimerEnabled() {
         
-        return visualTimer.isEnabled();
+        return getVisualTimer().isEnabled();
     }
     
     /**
@@ -519,7 +519,7 @@ public class SqshContext {
      */
     public void startVisualTimer() {
         
-        visualTimer.start();
+        getVisualTimer().start();
     }
     
     /**
@@ -528,7 +528,7 @@ public class SqshContext {
      */
     public void stopVisualTimer() {
         
-        visualTimer.stop();
+        getVisualTimer().stop();
     }
     
     /**
@@ -548,33 +548,6 @@ public class SqshContext {
     public ExitStatus getExitStatus() {
         
         return this.exitStatus;
-    }
-    
-    /**
-     * Changes which input handler is being used for this context.
-     * @param readerType The name of the reader
-     */
-    public void setReader(String readerType) {
-        
-        /*
-         * If we were already interactive, and switch to (possibly) 
-         * non-interactive mode then save the current state away.
-         */
-        try {
-                
-            console.writeHistory();
-        }
-        catch (Exception e) {
-                
-            /* IGNORED */
-        }
-        
-        /*
-         * Create the new reader and mark if we are interactive.
-         */
-        console = ConsoleLineReader.getReader(this, readerType);
-        
-        loadReadlineHistory(getConfigDirectory());
     }
     
     /**
@@ -816,8 +789,45 @@ public class SqshContext {
     /**
      * @return The console handle.
      */
-    public ConsoleLineReader getConsole() {
-        
+    public LineReader getConsole() {
+
+        if (console == null) {
+
+            Terminal terminal;
+            try {
+
+                terminal = TerminalBuilder.builder()
+                        .nativeSignals(true)
+                        .build();
+            }
+            catch (IOException e) {
+
+                System.err.println("Unable to create terminal: " + e.getMessage()
+                        + ". Falling back to dumb terminal");
+                try {
+                    terminal = TerminalBuilder.builder()
+                            .dumb(true)
+                            .build();
+                }
+                catch (IOException e2) {
+
+                    System.err.println("Unable to create dumb terminal: " + e2.getMessage()
+                            + ". Giving up");
+                    throw new RuntimeException(e.getMessage(), e);
+                }
+            }
+
+            File readlineHistory = new File(getConfigDirectory(), "readline_history");
+            console = LineReaderBuilder.builder()
+                    .appName("jsqsh")
+                    .terminal(terminal)
+                    .completer(new JLineTabCompleter(this))
+                    .variable(LineReader.HISTORY_FILE, readlineHistory.toString())
+                    .build();
+
+            console.setOpt(LineReader.Option.DISABLE_EVENT_EXPANSION);
+        }
+
         return console;
     }
     
@@ -1046,7 +1056,7 @@ public class SqshContext {
     
     /**
      * Looks up a session according to its session id.
-     * @param sesionId. The id number for the session
+     * @param sessionId The id number for the session
      * @return  The matching session or null if the id does not
      *   refer to a valid session.
      */
@@ -1248,9 +1258,7 @@ public class SqshContext {
             
             currentSession.out.println("Welcome to JSqsh " 
                 + Version.getVersion());
-            currentSession.out.println("Type \"\\help\" for help topics. Using " 
-                + console.getName() + ".");
-            
+            currentSession.out.println("Type \"\\help\" for help topics." );
             doneBanner = true;
             
             doWelcome(session);
@@ -1506,7 +1514,8 @@ public class SqshContext {
         session.out.println("You will now enter the jsqsh setup wizard.");
         try {
             
-            getConsole().readline("Hit enter to continue: ", false);
+            // getConsole().readline("Hit enter to continue: ", false);
+            getConsole().readLine("Hit enter to continue: ", ' ');
             Command command = session.getCommandManager().getCommand("\\setup");
             command.execute(session, new String [] { });
         }
@@ -1590,11 +1599,6 @@ public class SqshContext {
             LOG.fine("Processing configuration directory '"
                 + configDir.toString() + "'");
         }
-        
-        /*
-         * Load our readline history.
-         */
-        loadReadlineHistory(configDir);
         
         /*
          * Then load any additional drivers that the user
@@ -1725,43 +1729,6 @@ public class SqshContext {
     }
     
     /**
-     * Attempts to load the readline history file.
-     */
-    private void loadReadlineHistory(File homedir) {
-        
-        File history = new File(homedir, "readline_history");
-        try {
-                    
-            console.readHistory(history.toString());
-        }
-        catch (Throwable e) {
-                    
-            System.err.println("WARNING: Failed to process readline" +
-                    "history: " + e.getMessage());
-        }
-    }
-    
-    
-    /**
-     * Attempts to load the readline history file.
-     */
-    private void saveReadlineHistory(File homedir) {
-        
-        if (homedir.exists()) {
-            
-            try {
-                
-                console.writeHistory();
-            }
-            catch (Throwable e) {
-                
-                System.err.println("WARNING: Failed to save readline" +
-                        " history: " + e.getMessage());
-            }
-        }
-    }
-    
-    /**
      * Saves off the state of sqsh into the configuration directory.
      */
     private void saveConfigDirectory() {
@@ -1782,8 +1749,11 @@ public class SqshContext {
             System.out.println("WARNING: Failed to rename \"" + historyTmp 
                 + "\" to \"" + history + "\"");
         }
-        
-        saveReadlineHistory(homedir);
+
+        if (console != null) {
+
+            console.getHistory().save();
+        }
     }
     
     /**

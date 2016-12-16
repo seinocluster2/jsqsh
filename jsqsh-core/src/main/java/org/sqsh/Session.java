@@ -30,9 +30,8 @@ import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import org.sqsh.input.ConsoleEOFException;
-import org.sqsh.input.ConsoleException;
-import org.sqsh.input.ConsoleInterruptedException;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.UserInterruptException;
 import org.sqsh.jni.Shell;
 import org.sqsh.jni.ShellException;
 import org.sqsh.jni.ShellManager;
@@ -238,7 +237,7 @@ public class Session
     /**
      * Changes the error stream.
      * 
-     * @param out The new error stream.
+     * @param err The new error stream.
      * @param autoClose If true, then the error stream will automatically
      *   be closed when it is no longer used by the session.
      */
@@ -251,7 +250,7 @@ public class Session
     /**
      * Changes the input stream.
      * 
-     * @param out The new input stream.
+     * @param in The new input stream.
      * @param autoClose If true, then the input stream will automatically
      *   be closed when it is no longer used by the session.
      * @param isInteractive If true, then the input stream is assumed to
@@ -840,7 +839,7 @@ public class Session
                         }
                     }
                 }
-                catch (ConsoleInterruptedException e) {
+                catch (UserInterruptException e) {
                     
                     /*
                      * If the user hit ^C, then we abort the current buffer, saving it
@@ -851,7 +850,7 @@ public class Session
                         getBufferManager().newBuffer();
                     }
                 }
-                catch (ConsoleException e) {
+                catch (IOException e) {
                     
                     err.println("Error reading input: " + e.getMessage());
                     e.printStackTrace(err);
@@ -993,13 +992,12 @@ public class Session
     /**
      * Reads a line of input from the user.
      * 
-     * @param input Where to read input.
      * @return The line read or null upon EOF.
-     * @throws ConsoleException If the user hits ^C ({@link ConsoleInterruptedException}),
+     * @throws UserInterruptException If the user hits ^C
      *   or an error is encountered on input.
      */
     private String readLine() 
-        throws ConsoleException {
+        throws UserInterruptException, IOException {
         
         String line = null;
         try {
@@ -1009,8 +1007,8 @@ public class Session
                 String prompt = getVariableManager().get("prompt");
                 prompt =  (prompt == null)  
                     ? ">" : getStringExpander().expand(this, prompt);
-                                
-                line = sqshContext.getConsole().readline(prompt + " ", true);
+
+                line = sqshContext.getConsole().readLine(prompt + " ");
                 if (line == null) {
                         
                     line = "";
@@ -1036,11 +1034,11 @@ public class Session
                 }
             }
         }
-        catch (ConsoleInterruptedException e) {
+        catch (UserInterruptException e) {
             
             throw e;
         }
-        catch (ConsoleEOFException e) {
+        catch (EndOfFileException e) {
             
             line = null;
         }
@@ -1048,11 +1046,7 @@ public class Session
             
             line = null;
         }
-        catch (Throwable e) {
-            
-            throw new ConsoleException(e.getMessage(), e);
-        }
-        
+
         if (line != null && sqshContext.isInputEchoed()) {
             
             out.println(line);
@@ -1257,7 +1251,7 @@ public class Session
              */
             if (ioManager.isInteractive()) {
                 
-                sqshContext.getConsole().addToHistory(str);
+                sqshContext.getConsole().getHistory().add(str);
             }
             
             buf.addLine(str);
@@ -1353,8 +1347,7 @@ public class Session
      * Used internally to execute a command.
      * 
      * @param command The command that is to be executed.
-     * @param tokenizer The command line tokenizer. This is expected to
-     *    have already processed the first token (the command name itself).
+     * @param commandLine The arguments to the command
      */
     private void runCommand(Command command, String commandLine)
         throws SqshContextMessage {
