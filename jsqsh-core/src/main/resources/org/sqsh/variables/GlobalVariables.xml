@@ -141,7 +141,7 @@
         ]]></Help>
 	</Property>
     
-	<Property bean="global" name="editing_mode" property="console.editingMode">
+	<Property bean="global" name="editing_mode" property="editingMode">
         <Description>Controls the editing mode for the line editor</Description>
         <Help><![CDATA[
 
